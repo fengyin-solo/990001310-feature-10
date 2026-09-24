@@ -189,7 +189,30 @@ function getReportStatusClass($status) {
 }
 
 /**
+ * 每条举报最多可补充的证据图片数量
+ */
+define('REPORT_EVIDENCE_MAX', 6);
+
+/**
+ * 单张证据图片大小上限（5MB）
+ */
+define('REPORT_EVIDENCE_MAX_SIZE', 5 * 1024 * 1024);
+
+/**
+ * 允许的证据图片 MIME 类型 => 扩展名
+ */
+function reportEvidenceAllowedMimes() {
+    return [
+        'image/jpeg' => 'jpg',
+        'image/png'  => 'png',
+        'image/gif'  => 'gif',
+        'image/webp' => 'webp',
+    ];
+}
+
+/**
  * 检查当前访客是否已举报过某条留言
+ * 撤回记录已被物理删除，因此撤回后本函数自然返回 false，可重新发起举报。
  */
 function hasReported($messageId) {
     $visitorId = getVisitorId();
@@ -200,7 +223,98 @@ function hasReported($messageId) {
 }
 
 /**
+ * 获取当前访客对某条留言的举报记录（不存在返回 null）
+ */
+function getMyReport($messageId) {
+    $visitorId = getVisitorId();
+    $db = getDB();
+    $stmt = $db->prepare("SELECT * FROM reports WHERE visitor_id = ? AND message_id = ?");
+    $stmt->execute([$visitorId, $messageId]);
+    $report = $stmt->fetch();
+    return $report ?: null;
+}
+
+/**
+ * 获取某条举报的证据图片列表
+ */
+function getReportEvidences($reportId) {
+    $db = getDB();
+    $stmt = $db->prepare("SELECT id, image, created_at FROM report_evidences WHERE report_id = ? ORDER BY id ASC");
+    $stmt->execute([$reportId]);
+    return $stmt->fetchAll();
+}
+
+/**
+ * 规范化多文件上传字段（HTML multiple）
+ * 输入形如 ['name'=>[...], 'tmp_name'=>[...], ...]，输出单文件数组列表
+ */
+function normalizeUploadedFiles(array $files) {
+    $result = [];
+    foreach ($files as $key => $value) {
+        if (is_array($value)) {
+            foreach ($value as $i => $v) {
+                $result[$i][$key] = $v;
+            }
+        }
+    }
+    return $result;
+}
+
+/**
+ * 校验并保存一张证据图片，返回相对路径（uploads/evidence/xxx.jpg）
+ * 校验不通过或保存失败时抛出 Exception
+ */
+function saveReportEvidenceFile(array $file) {
+    if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+        return null;
+    }
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        throw new Exception('证据图片上传失败，请重试');
+    }
+    if ($file['size'] > REPORT_EVIDENCE_MAX_SIZE) {
+        throw new Exception('单张证据图片不能超过5MB');
+    }
+
+    // 以文件实际内容识别 MIME，不信任客户端提交的 type
+    $finfo = finfo_open(FILEINFO_MIME_TYPE);
+    $mime = finfo_file($finfo, $file['tmp_name']);
+    finfo_close($finfo);
+    $allowed = reportEvidenceAllowedMimes();
+    if (!isset($allowed[$mime])) {
+        throw new Exception('仅支持 JPG、PNG、GIF、WebP 格式的证据图片');
+    }
+
+    $uploadDir = __DIR__ . '/../uploads/evidence/';
+    if (!is_dir($uploadDir) && !mkdir($uploadDir, 0755, true) && !is_dir($uploadDir)) {
+        throw new Exception('证据存储目录不可写');
+    }
+
+    $filename = date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $allowed[$mime];
+    if (!move_uploaded_file($file['tmp_name'], $uploadDir . $filename)) {
+        throw new Exception('证据图片保存失败，请重试');
+    }
+
+    return 'uploads/evidence/' . $filename;
+}
+
+/**
+ * 删除一张证据图片文件（仅删除受管理目录内的文件）
+ */
+function deleteReportEvidenceFile($relativePath) {
+    $relativePath = (string) $relativePath;
+    if (strpos($relativePath, 'uploads/evidence/') !== 0) {
+        return;
+    }
+    $fullPath = __DIR__ . '/../' . $relativePath;
+    if (is_file($fullPath)) {
+        unlink($fullPath);
+    }
+}
+
+/**
  * 提交举报
+ * 依赖 reports 表的 UNIQUE(visitor_id, message_id) 约束保证并发安全：
+ * 并发提交或失败重试只有最先落地的一次会成功，不会重复生成记录。
  */
 function submitReport($messageId, $reportType, $description = '') {
     $visitorId = getVisitorId();
@@ -221,10 +335,146 @@ function submitReport($messageId, $reportType, $description = '') {
         throw new Exception('您已经举报过这条留言了');
     }
 
-    $stmt = $db->prepare("INSERT INTO reports (message_id, visitor_id, report_type, description) VALUES (?, ?, ?, ?)");
-    $stmt->execute([$messageId, $visitorId, $reportType, $description]);
+    try {
+        $stmt = $db->prepare("INSERT INTO reports (message_id, visitor_id, report_type, description) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$messageId, $visitorId, $reportType, $description]);
+    } catch (PDOException $e) {
+        // 唯一键冲突（并发提交/网络重试）：举报已存在，不重复生成记录
+        $sqlStateCode = $e->errorInfo[1] ?? null;
+        if ((int) $sqlStateCode === 1062) {
+            throw new Exception('您已经举报过这条留言了，请勿重复提交');
+        }
+        throw $e;
+    }
 
     return $db->lastInsertId();
+}
+
+/**
+ * 补充举报证据（仅限举报人本人、且举报仍处于待处理状态）
+ * 返回补充后该举报的全部证据列表
+ */
+function addReportEvidence($reportId, array $files) {
+    $visitorId = getVisitorId();
+    $db = getDB();
+
+    // 展开多文件字段并过滤未选择的项
+    $files = normalizeUploadedFiles($files);
+    $files = array_values(array_filter($files, function ($f) {
+        return isset($f['error']) && $f['error'] !== UPLOAD_ERR_NO_FILE;
+    }));
+    if (empty($files)) {
+        throw new Exception('请先选择要补充的证据图片');
+    }
+
+    // 先落盘文件，再开事务写库
+    $savedPaths = [];
+    try {
+        foreach ($files as $file) {
+            $path = saveReportEvidenceFile($file);
+            if ($path !== null) {
+                $savedPaths[] = $path;
+            }
+        }
+    } catch (Exception $e) {
+        // 校验/保存失败：清理本次已保存的文件，不留孤儿文件
+        foreach ($savedPaths as $path) {
+            deleteReportEvidenceFile($path);
+        }
+        throw $e;
+    }
+
+    try {
+        $db->beginTransaction();
+
+        // 行锁：与管理员处理、撤回操作互斥，谁先落地谁生效
+        $stmt = $db->prepare("SELECT * FROM reports WHERE id = ? FOR UPDATE");
+        $stmt->execute([$reportId]);
+        $report = $stmt->fetch();
+
+        if (!$report) {
+            throw new Exception('举报不存在或已撤回');
+        }
+        if (!hash_equals($visitorId, (string) $report['visitor_id'])) {
+            // 越权：不改动任何记录
+            throw new Exception('无权补充此举报的证据');
+        }
+        if ((int) $report['status'] !== 0) {
+            throw new Exception('举报已在处理中或已完成，无法补充证据');
+        }
+
+        $countStmt = $db->prepare("SELECT COUNT(*) FROM report_evidences WHERE report_id = ?");
+        $countStmt->execute([$reportId]);
+        $existCount = (int) $countStmt->fetchColumn();
+        if ($existCount + count($savedPaths) > REPORT_EVIDENCE_MAX) {
+            throw new Exception('每条举报最多补充' . REPORT_EVIDENCE_MAX . '张证据图片（已有' . $existCount . '张）');
+        }
+
+        $insert = $db->prepare("INSERT INTO report_evidences (report_id, image) VALUES (?, ?)");
+        foreach ($savedPaths as $path) {
+            $insert->execute([$reportId, $path]);
+        }
+
+        $evidences = getReportEvidences($reportId);
+        $db->commit();
+        return $evidences;
+    } catch (Exception $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        // 入库失败（含越权/状态变更/数量超限）：回滚并清理刚保存的文件
+        foreach ($savedPaths as $path) {
+            deleteReportEvidenceFile($path);
+        }
+        throw $e;
+    }
+}
+
+/**
+ * 撤回举报（仅限举报人本人、且举报仍处于待处理状态）
+ * 物理删除举报及其证据记录与文件：不残留任何旧状态，
+ * 删除后 UNIQUE(visitor_id, message_id) 约束释放，可重新发起举报。
+ */
+function withdrawReport($reportId) {
+    $visitorId = getVisitorId();
+    $db = getDB();
+
+    $db->beginTransaction();
+    try {
+        // 行锁：与管理员“处理”操作互斥，并发时先落地者为准
+        $stmt = $db->prepare("SELECT * FROM reports WHERE id = ? FOR UPDATE");
+        $stmt->execute([$reportId]);
+        $report = $stmt->fetch();
+
+        if (!$report) {
+            throw new Exception('举报不存在或已撤回');
+        }
+        if (!hash_equals($visitorId, (string) $report['visitor_id'])) {
+            // 越权：不改动任何记录
+            throw new Exception('无权撤回此举报');
+        }
+        if ((int) $report['status'] !== 0) {
+            throw new Exception('举报已在处理中或已完成，无法撤回');
+        }
+
+        // ON DELETE CASCADE 会同步删除 report_evidences 记录
+        $evidences = getReportEvidences($reportId);
+        $db->prepare("DELETE FROM reports WHERE id = ? AND visitor_id = ? AND status = 0")
+            ->execute([$reportId, $visitorId]);
+
+        $db->commit();
+
+        // 提交成功后再删除证据文件
+        foreach ($evidences as $ev) {
+            deleteReportEvidenceFile($ev['image']);
+        }
+        return true;
+    } catch (Exception $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
 }
 
 /**

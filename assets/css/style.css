@@ -828,8 +828,152 @@ a:hover { color: var(--primary-dark); }
     .report-type-options {
         grid-template-columns: 1fr;
     }
-    
+
     .report-text {
         display: none;
     }
 }
+
+/* ========== My Report Panel (举报人本人可见) ========== */
+.my-report-panel {
+    margin-top: 20px;
+    padding: 16px 18px;
+    border: 1px solid var(--gray-200);
+    border-left: 4px solid var(--gray-400);
+    border-radius: var(--radius-sm);
+    background: #f9fafb;
+}
+
+.my-report-panel.report-my-pending {
+    border-left-color: #f59e0b;
+    background: #fffbeb;
+}
+
+.my-report-panel.report-my-resolved-deleted {
+    border-left-color: #10b981;
+    background: #ecfdf5;
+}
+
+.my-report-panel.report-my-resolved-ignored {
+    border-left-color: #3b82f6;
+    background: #eff6ff;
+}
+
+.my-report-panel.report-my-rejected {
+    border-left-color: #ef4444;
+    background: #fef2f2;
+}
+
+.my-report-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.my-report-head h4 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.my-report-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 0.85rem;
+    color: var(--gray-600);
+    margin-bottom: 8px;
+}
+
+.my-report-desc {
+    font-size: 0.9rem;
+    color: var(--gray-700);
+    background: #fff;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--gray-200);
+    margin-bottom: 12px;
+    word-break: break-word;
+}
+
+.my-evidence-block {
+    margin-bottom: 12px;
+}
+
+.my-evidence-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--gray-700);
+    margin-bottom: 8px;
+}
+
+.evidence-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 8px;
+}
+
+.admin-evidence-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    margin-top: 8px;
+}
+
+.evidence-item {
+    display: block;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    border: 1px solid var(--gray-200);
+    background: #fff;
+    aspect-ratio: 1 / 1;
+    transition: var(--transition);
+}
+
+.evidence-item:hover {
+    border-color: var(--primary);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.evidence-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.evidence-empty {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 8px 0;
+}
+
+.my-report-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--gray-200);
+}
+
+#evidenceModal input[type="file"] {
+    display: block;
+    width: 100%;
+    padding: 10px;
+    border: 1px dashed var(--gray-300);
+    border-radius: var(--radius-sm);
+    background: #fff;
+    cursor: pointer;
+}
+
+#evidenceModal input[type="file"]:hover {
+    border-color: var(--primary);
+}
+
+@media (max-width: 480px) {
+    .my-report-meta {
+        flex-direction: column;
+        gap: 4px;
+    }
+}
+

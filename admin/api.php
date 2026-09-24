@@ -42,6 +42,14 @@ switch ($action) {
             $imgFile = __DIR__ . '/../' . $msg['image'];
             if (file_exists($imgFile)) unlink($imgFile);
         }
+        // 清理该留言下所有举报证据图片（举报与证据记录会随外键级联删除）
+        $allReports = $db->prepare("SELECT id FROM reports WHERE message_id = ?");
+        $allReports->execute([$id]);
+        foreach ($allReports->fetchAll() as $rep) {
+            foreach (getReportEvidences($rep['id']) as $ev) {
+                deleteReportEvidenceFile($ev['image']);
+            }
+        }
         $db->prepare("DELETE FROM messages WHERE id = ?")->execute([$id]);
         jsonResponse(0, '删除成功');
         break;
@@ -58,12 +66,20 @@ switch ($action) {
         $report['status_class'] = getReportStatusClass($report['status']);
         $report['message_exists'] = !empty($report['message_title']);
         $report['message_type_label'] = $report['message_type'] ? getTypeLabel($report['message_type']) : '';
-        $report['message_title'] = $report['message_title'] ? cleanInput($report['message_title']) : '';
-        $report['message_nickname'] = $report['message_nickname'] ? cleanInput($report['message_nickname']) : '';
-        $report['message_content'] = $report['message_content'] ? nl2br(cleanInput($report['message_content'])) : '';
-        $report['description'] = $report['description'] ? nl2br(cleanInput($report['description'])) : '';
-        $report['process_note'] = $report['process_note'] ? nl2br(cleanInput($report['process_note'])) : '';
-        $report['admin_name'] = $report['admin_name'] ? cleanInput($report['admin_name']) : '';
+        // 以下文本入库时已经 cleanInput 转义，此处只做换行转换，避免双重转义
+        $report['message_title'] = $report['message_title'] ?? '';
+        $report['message_nickname'] = $report['message_nickname'] ?? '';
+        $report['message_content'] = $report['message_content'] ? nl2br($report['message_content']) : '';
+        $report['description'] = $report['description'] !== null ? nl2br($report['description']) : '';
+        $report['process_note'] = $report['process_note'] ? nl2br($report['process_note']) : '';
+        $report['admin_name'] = $report['admin_name'] ?? '';
+
+        // 证据图片（若举报已被举报人撤回，整条记录不存在，自然无法查看）
+        $report['evidences'] = getReportEvidences($report['id']);
+        foreach ($report['evidences'] as &$ev) {
+            $ev['image'] = cleanInput($ev['image']);
+        }
+        unset($ev);
 
         jsonResponse(0, 'ok', $report);
         break;
@@ -90,6 +106,17 @@ switch ($action) {
                     $imgFile = __DIR__ . '/../' . $msg['image'];
                     if (file_exists($imgFile)) unlink($imgFile);
                 }
+
+                // 删除留言会级联删除该留言下全部举报及其证据记录，
+                // 此处先清理证据图片文件，避免磁盘残留
+                $allReports = $db->prepare("SELECT id FROM reports WHERE message_id = ?");
+                $allReports->execute([$report['message_id']]);
+                foreach ($allReports->fetchAll() as $otherReport) {
+                    foreach (getReportEvidences($otherReport['id']) as $ev) {
+                        deleteReportEvidenceFile($ev['image']);
+                    }
+                }
+
                 $db->prepare("DELETE FROM messages WHERE id = ?")->execute([$report['message_id']]);
             }
 

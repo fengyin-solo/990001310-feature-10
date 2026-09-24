@@ -276,23 +276,22 @@ function submitReport() {
         if (result.code === 0) {
             showToast(result.msg, 'success');
             closeReportModal();
-
-            const reportBtn = document.querySelector('.report-btn[data-message-id="' + messageId + '"]');
-            if (reportBtn) {
-                reportBtn.disabled = true;
-                reportBtn.classList.remove('btn-danger');
-                reportBtn.classList.add('btn-secondary');
-                const reportText = reportBtn.querySelector('.report-text');
-                if (reportText) {
-                    reportText.textContent = '已举报';
-                }
-            }
+            // 服务端状态已变化（待处理面板出现、按钮置灰），整页同步
+            setTimeout(() => location.reload(), 600);
         } else {
-            showToast(result.msg || '举报失败', 'error');
+            // 并发提交或失败重试导致服务端已有记录时，以服务端为准，刷新同步
+            if (result.msg && result.msg.indexOf('已经举报') !== -1) {
+                showToast(result.msg, 'warning');
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                showToast(result.msg || '举报失败', 'error');
+            }
         }
     })
     .catch(error => {
         console.error('举报提交失败:', error);
+        // 网络失败时不重复自动提交，交由用户手动重试；
+        // 若首次其实已落地，服务端唯一约束会阻止重复记录
         showToast('网络错误，请稍后重试', 'error');
     })
     .finally(() => {
@@ -301,6 +300,165 @@ function submitReport() {
     });
 }
 
+/* ========== 举报证据补充与撤回 ========== */
+
+/**
+ * 打开补充证据弹窗
+ */
+function openEvidenceModal(reportId) {
+    const modal = document.getElementById('evidenceModal');
+    if (!modal) return;
+    document.getElementById('evidenceReportId').value = reportId;
+    document.getElementById('evidenceFiles').value = '';
+    modal.style.display = 'flex';
+}
+
+/**
+ * 关闭补充证据弹窗
+ */
+function closeEvidenceModal() {
+    const modal = document.getElementById('evidenceModal');
+    if (modal) modal.style.display = 'none';
+}
+
+/**
+ * 初始化补充证据表单
+ */
+function initEvidenceForm() {
+    const form = document.getElementById('evidenceForm');
+    if (!form) return;
+
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        submitEvidence();
+    });
+
+    const modal = document.getElementById('evidenceModal');
+    if (modal) {
+        modal.addEventListener('click', function(e) {
+            if (e.target === this) closeEvidenceModal();
+        });
+    }
+}
+
+/**
+ * 上传补充证据
+ */
+function submitEvidence() {
+    const panel = document.getElementById('myReportPanel');
+    const reportId = document.getElementById('evidenceReportId').value;
+    const fileInput = document.getElementById('evidenceFiles');
+    const submitBtn = document.getElementById('evidenceSubmitBtn');
+
+    if (!fileInput.files || fileInput.files.length === 0) {
+        showToast('请先选择要补充的证据图片', 'warning');
+        return;
+    }
+
+    const maxTotal = 6;
+    const existCount = panel ? parseInt(panel.dataset.evidenceCount || '0', 10) : 0;
+    const maxSize = 5 * 1024 * 1024;
+    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+    for (let i = 0; i < fileInput.files.length; i++) {
+        const f = fileInput.files[i];
+        if (allowed.indexOf(f.type) === -1) {
+            showToast('仅支持 JPG、PNG、GIF、WebP 格式的图片', 'error');
+            return;
+        }
+        if (f.size > maxSize) {
+            showToast('单张图片不能超过 5MB：' + f.name, 'error');
+            return;
+        }
+    }
+
+    if (existCount + fileInput.files.length > maxTotal) {
+        showToast('每条举报最多 ' + maxTotal + ' 张证据（当前已有 ' + existCount + ' 张）', 'warning');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('action', 'add_evidence');
+    // 证据接口需要 message_id 作为入口校验（与举报接口保持一致）
+    const reportBtn = document.querySelector('.report-btn');
+    if (reportBtn && reportBtn.dataset.messageId) {
+        formData.append('message_id', reportBtn.dataset.messageId);
+    }
+    formData.append('report_id', reportId);
+    for (let i = 0; i < fileInput.files.length; i++) {
+        formData.append('evidence[]', fileInput.files[i]);
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = '上传中...';
+
+    fetch('api/report.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.code === 0) {
+            showToast(result.msg, 'success');
+            closeEvidenceModal();
+            // 刷新页面以呈现最新证据列表与数量（服务端渲染，保证状态一致）
+            setTimeout(() => location.reload(), 600);
+        } else {
+            // 越权 / 已被管理员处理 / 数量超限等，均以服务端状态为准
+            showToast(result.msg || '证据补充失败', 'error');
+        }
+    })
+    .catch(error => {
+        console.error('证据补充失败:', error);
+        showToast('网络错误，请稍后重试', 'error');
+    })
+    .finally(() => {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '上传证据';
+    });
+}
+
+/**
+ * 撤回本人举报（仅待处理状态）
+ */
+function withdrawMyReport(reportId) {
+    if (!confirm('确定撤回这条举报吗？撤回后记录将被清除，您可以重新发起举报。')) return;
+
+    const reportBtn = document.querySelector('.report-btn');
+    const messageId = reportBtn ? reportBtn.dataset.messageId : '';
+
+    const formData = new FormData();
+    formData.append('action', 'withdraw');
+    formData.append('report_id', reportId);
+    if (messageId) formData.append('message_id', messageId);
+
+    // 防重复点击：并发撤回以先落地的一次为准
+    const actionBtns = document.querySelectorAll('.my-report-actions .btn');
+    actionBtns.forEach(btn => { btn.disabled = true; });
+
+    fetch('api/report.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.code === 0) {
+            showToast(result.msg, 'success');
+            // 举报记录已物理删除：按钮恢复为可举报、面板消失、后台待处理数同步减少
+            setTimeout(() => location.reload(), 600);
+        } else {
+            showToast(result.msg || '撤回失败', 'error');
+            actionBtns.forEach(btn => { btn.disabled = false; });
+        }
+    })
+    .catch(error => {
+        console.error('撤回举报失败:', error);
+        showToast('网络错误，请稍后重试', 'error');
+        actionBtns.forEach(btn => { btn.disabled = false; });
+    });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     initReportForm();
+    initEvidenceForm();
 });
