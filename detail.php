@@ -68,10 +68,10 @@ include __DIR__ . '/includes/header.php';
                     <span class="favorite-icon"><?= $isFav ? '⭐' : '☆' ?></span>
                     <span class="favorite-text"><?= $isFav ? '已收藏' : '收藏' ?></span>
                 </button>
-                <?php $hasReported = hasReported($msg['id']); ?>
-                <button class="btn <?= $hasReported ? 'btn-secondary' : 'btn-danger' ?> report-btn" data-message-id="<?= $msg['id'] ?>" onclick="openReportModal(<?= $msg['id'] ?>)" <?= $hasReported ? 'disabled' : '' ?>>
+                <?php $myReport = getMyReport($msg['id']); ?>
+                <button class="btn <?= $myReport ? 'btn-secondary' : 'btn-danger' ?> report-btn" data-message-id="<?= $msg['id'] ?>" onclick="openReportEntry(<?= $msg['id'] ?>)">
                     <span>🚩</span>
-                    <span class="report-text"><?= $hasReported ? '已举报' : '举报' ?></span>
+                    <span class="report-text"><?= $myReport ? reportButtonText($myReport['status']) : '举报' ?></span>
                 </button>
                 <a href="submit.php" class="btn btn-primary">发布留言</a>
             </div>
@@ -119,8 +119,13 @@ include __DIR__ . '/includes/header.php';
                     <textarea id="reportDescription" name="description" rows="4" maxlength="500" placeholder="请描述具体的违规内容，帮助我们更好地处理..."></textarea>
                     <span class="char-count"><span id="reportDescCount">0</span>/500</span>
                 </div>
+                <div class="form-group">
+                    <label for="reportEvidence">证据图片 <span class="text-muted">(可选，最多6张，单张5MB以内，支持JPG/PNG/GIF/WebP)</span></label>
+                    <input type="file" id="reportEvidence" name="evidence[]" accept="image/jpeg,image/png,image/gif,image/webp" multiple>
+                    <div class="evidence-preview" id="reportEvidencePreview"></div>
+                </div>
                 <div class="form-tip">
-                    <p>⚠️ 恶意举报将被限制功能使用，请如实填写举报内容。</p>
+                    <p>⚠️ 恶意举报将被限制功能使用，请如实填写举报内容。提交后管理员处理前可补充证据或撤回举报。</p>
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeReportModal()">取消</button>
@@ -128,6 +133,17 @@ include __DIR__ . '/includes/header.php';
                 </div>
             </form>
         </div>
+    </div>
+</div>
+
+<!-- 我的举报弹窗（查看状态 / 补充证据 / 撤回） -->
+<div class="modal" id="myReportModal" style="display:none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>🚩 我的举报</h3>
+            <button class="modal-close" onclick="closeMyReportModal()">&times;</button>
+        </div>
+        <div class="modal-body" id="myReportBody">加载中...</div>
     </div>
 </div>
 

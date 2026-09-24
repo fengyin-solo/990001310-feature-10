@@ -73,6 +73,16 @@ try {
         FOREIGN KEY (`processed_by`) REFERENCES `admins`(`id`) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='举报表'");
 
+    // 举报证据表
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `report_evidence` (
+        `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        `report_id` INT UNSIGNED NOT NULL COMMENT '所属举报ID',
+        `image` VARCHAR(255) NOT NULL COMMENT '证据图片路径',
+        `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '上传时间',
+        INDEX `idx_report_id` (`report_id`),
+        CONSTRAINT `fk_evidence_report` FOREIGN KEY (`report_id`) REFERENCES `reports`(`id`) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='举报证据图片表'");
+
     // 插入默认管理员 admin/admin123
     $hash = password_hash('admin123', PASSWORD_DEFAULT);
     $stmt = $pdo->prepare("INSERT IGNORE INTO `admins` (`username`, `password`) VALUES ('admin', ?)");

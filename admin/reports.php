@@ -237,6 +237,14 @@ function viewReport(id) {
             if (d.description) {
                 html += '<p><strong>举报说明：</strong></p><div class="detail-text">' + d.description + '</div>';
             }
+            if (d.evidence && d.evidence.length) {
+                html += '<p style="margin-top:12px;"><strong>证据图片（' + d.evidence.length + '）：</strong></p>';
+                html += '<div class="evidence-gallery">';
+                d.evidence.forEach(function(ev) {
+                    html += '<div class="evidence-thumb"><img src="../' + ev.image + '" alt="证据图片" onclick="window.open(this.src)"></div>';
+                });
+                html += '</div>';
+            }
             html += '<hr style="margin: 16px 0; border: none; border-top: 1px solid #e5e7eb;">';
             html += '<h4 style="margin-bottom: 12px;">被举报留言信息</h4>';
             if (d.message_exists) {

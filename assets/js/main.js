@@ -193,6 +193,35 @@ function showToast(message, type = 'info') {
 }
 
 /**
+ * 举报入口：未举报打开发起弹窗，已举报打开"我的举报"弹窗
+ */
+function openReportEntry(messageId) {
+    const btn = document.querySelector('.report-btn[data-message-id="' + messageId + '"]');
+    if (btn) btn.disabled = true;
+
+    fetch('api/report.php', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'action=my_report&message_id=' + encodeURIComponent(messageId)
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.code === 0 && result.data.report) {
+            openMyReportModal(messageId, result.data.report);
+        } else {
+            openReportModal(messageId);
+        }
+    })
+    .catch(error => {
+        console.error('举报状态查询失败:', error);
+        showToast('网络错误，请稍后重试', 'error');
+    })
+    .finally(() => {
+        if (btn) btn.disabled = false;
+    });
+}
+
+/**
  * 打开举报弹窗
  */
 function openReportModal(messageId) {
@@ -202,6 +231,9 @@ function openReportModal(messageId) {
     document.getElementById('reportMessageId').value = messageId;
     document.getElementById('reportForm').reset();
     document.getElementById('reportDescCount').textContent = '0';
+    const evidenceInput = document.getElementById('reportEvidence');
+    if (evidenceInput) evidenceInput.value = '';
+    renderEvidencePreview('reportEvidencePreview', []);
     modal.style.display = 'flex';
 }
 
@@ -231,6 +263,13 @@ function initReportForm() {
         });
     }
 
+    const evidenceInput = document.getElementById('reportEvidence');
+    if (evidenceInput) {
+        evidenceInput.addEventListener('change', function() {
+            validateEvidenceFiles(this, 0);
+        });
+    }
+
     form.addEventListener('submit', function(e) {
         e.preventDefault();
         submitReport();
@@ -239,10 +278,61 @@ function initReportForm() {
     document.getElementById('reportModal').addEventListener('click', function(e) {
         if (e.target === this) closeReportModal();
     });
+
+    const myModal = document.getElementById('myReportModal');
+    if (myModal) {
+        myModal.addEventListener('click', function(e) {
+            if (e.target === this) closeMyReportModal();
+        });
+    }
 }
 
 /**
- * 提交举报
+ * 校验待上传证据图片数量与大小
+ * @param {HTMLInputElement} input 文件输入框
+ * @param {number} existingCount 已有证据数量
+ * @returns {boolean}
+ */
+function validateEvidenceFiles(input, existingCount) {
+    const limit = 6;
+    const files = Array.from(input.files || []);
+    if (existingCount + files.length > limit) {
+        showToast('证据图片最多' + limit + '张', 'warning');
+        input.value = '';
+        renderEvidencePreview(input.id + 'Preview', input.files);
+        return false;
+    }
+    const oversized = files.find(f => f.size > 5 * 1024 * 1024);
+    if (oversized) {
+        showToast('单张图片不能超过5MB', 'warning');
+        input.value = '';
+        renderEvidencePreview(input.id + 'Preview', input.files);
+        return false;
+    }
+    renderEvidencePreview(input.id + 'Preview', input.files);
+    return true;
+}
+
+/**
+ * 渲染本地待上传图片预览
+ */
+function renderEvidencePreview(containerId, files) {
+    const box = document.getElementById(containerId);
+    if (!box) return;
+    box.innerHTML = '';
+    Array.from(files || []).forEach(file => {
+        const item = document.createElement('div');
+        item.className = 'evidence-thumb';
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(file);
+        img.alt = file.name || '证据图片';
+        item.appendChild(img);
+        box.appendChild(item);
+    });
+}
+
+/**
+ * 提交举报（失败重试不会重复生成记录，由服务端幂等保证）
  */
 function submitReport() {
     const form = document.getElementById('reportForm');
@@ -252,20 +342,24 @@ function submitReport() {
     const messageId = document.getElementById('reportMessageId').value;
     const reportType = form.querySelector('input[name="report_type"]:checked');
     const description = document.getElementById('reportDescription').value;
+    const evidenceInput = document.getElementById('reportEvidence');
 
     if (!reportType) {
         showToast('请选择举报类型', 'warning');
         return;
     }
 
+    if (evidenceInput && evidenceInput.files && evidenceInput.files.length > 6) {
+        showToast('证据图片最多6张', 'warning');
+        return;
+    }
+
     submitBtn.disabled = true;
     submitBtn.textContent = '提交中...';
 
-    const formData = new FormData();
-    formData.append('message_id', messageId);
-    formData.append('report_type', reportType.value);
-    formData.append('description', description);
+    const formData = new FormData(form);
     formData.append('action', 'submit');
+    // FormData 已包含 message_id / report_type / description / evidence[]
 
     fetch('api/report.php', {
         method: 'POST',
@@ -276,16 +370,9 @@ function submitReport() {
         if (result.code === 0) {
             showToast(result.msg, 'success');
             closeReportModal();
-
-            const reportBtn = document.querySelector('.report-btn[data-message-id="' + messageId + '"]');
-            if (reportBtn) {
-                reportBtn.disabled = true;
-                reportBtn.classList.remove('btn-danger');
-                reportBtn.classList.add('btn-secondary');
-                const reportText = reportBtn.querySelector('.report-text');
-                if (reportText) {
-                    reportText.textContent = '已举报';
-                }
+            if (result.data && result.data.report) {
+                updateReportButton(messageId, result.data.report);
+                openMyReportModal(messageId, result.data.report);
             }
         } else {
             showToast(result.msg || '举报失败', 'error');
@@ -299,6 +386,230 @@ function submitReport() {
         submitBtn.disabled = false;
         submitBtn.textContent = '提交举报';
     });
+}
+
+/**
+ * 当前打开的"我的举报"数据
+ */
+let currentMyReport = null;
+
+/**
+ * 打开"我的举报"弹窗
+ */
+function openMyReportModal(messageId, report) {
+    const modal = document.getElementById('myReportModal');
+    if (!modal) return;
+    currentMyReport = report;
+    document.getElementById('myReportBody').innerHTML = renderMyReportHtml(report);
+    modal.style.display = 'flex';
+
+    const supplementInput = document.getElementById('supplementEvidence');
+    if (supplementInput) {
+        supplementInput.addEventListener('change', function() {
+            validateEvidenceFiles(this, report.evidence ? report.evidence.length : 0);
+        });
+    }
+}
+
+/**
+ * 关闭"我的举报"弹窗
+ */
+function closeMyReportModal() {
+    const modal = document.getElementById('myReportModal');
+    if (modal) modal.style.display = 'none';
+    currentMyReport = null;
+}
+
+/**
+ * 渲染"我的举报"内容
+ */
+function renderMyReportHtml(report) {
+    const pending = report.status === 0;
+    let html = '<div class="detail-view my-report-view">';
+    html += '<p><strong>举报类型：</strong><span class="badge badge-' + report.report_type + '">' + report.report_type_label + '</span></p>';
+    html += '<p><strong>举报时间：</strong>' + escapeHtml(report.created_at) + '</p>';
+    html += '<p><strong>当前状态：</strong><span class="status-badge report-status-' + report.status_class + '">' + report.status_label + '</span></p>';
+
+    if (report.description) {
+        // 服务端入库时已做 HTML 转义，这里仅转换换行
+        html += '<p><strong>补充说明：</strong></p><div class="detail-text">' + String(report.description).replace(/\n/g, '<br>') + '</div>';
+    }
+
+    const evidence = report.evidence || [];
+    html += '<div class="evidence-section">';
+    html += '<p><strong>证据图片（' + evidence.length + '/' + report.evidence_limit + '）</strong></p>';
+    if (evidence.length) {
+        html += '<div class="evidence-gallery">';
+        evidence.forEach(function(ev) {
+            html += '<div class="evidence-thumb"><img src="' + escapeHtml(ev.image) + '" alt="证据图片" onclick="window.open(this.src)"></div>';
+        });
+        html += '</div>';
+    } else {
+        html += '<p class="text-muted">暂未上传证据图片</p>';
+    }
+    html += '</div>';
+
+    if (pending) {
+        html += '<div class="supplement-form">';
+        html += '<div class="form-group">';
+        html += '<label for="supplementEvidence">补充证据图片 <span class="text-muted">(还可上传' + (report.evidence_limit - evidence.length) + '张，单张5MB以内)</span></label>';
+        html += '<input type="file" id="supplementEvidence" name="evidence[]" accept="image/jpeg,image/png,image/gif,image/webp" multiple>';
+        html += '<div class="evidence-preview" id="supplementEvidencePreview"></div>';
+        html += '</div>';
+        html += '<div class="form-tip"><p>⏳ 管理员处理前可以继续补充证据；举报一旦开始处理或处理完成，将无法撤回或补充。</p></div>';
+        html += '<div class="form-actions">';
+        html += '<button type="button" class="btn btn-secondary" onclick="closeMyReportModal()">关闭</button>';
+        html += '<button type="button" class="btn btn-warning" id="supplementBtn" onclick="supplementEvidence(' + report.id + ', ' + report.message_id + ')">补充证据</button>';
+        html += '<button type="button" class="btn btn-danger" id="withdrawBtn" onclick="withdrawReport(' + report.id + ', ' + report.message_id + ')">撤回举报</button>';
+        html += '</div>';
+        html += '</div>';
+    } else {
+        html += '<div class="form-tip"><p>ℹ️ 举报已处理，无法补充证据或撤回。</p></div>';
+        if (report.process_note) {
+            html += '<p><strong>处理备注：</strong></p><div class="detail-text">' + String(report.process_note).replace(/\n/g, '<br>') + '</div>';
+        }
+        html += '<div class="form-actions"><button type="button" class="btn btn-secondary" onclick="closeMyReportModal()">关闭</button></div>';
+    }
+
+    html += '</div>';
+    return html;
+}
+
+/**
+ * HTML 转义
+ */
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * 补充举报证据（仅举报人、待处理状态可用）
+ */
+function supplementEvidence(reportId, messageId) {
+    const input = document.getElementById('supplementEvidence');
+    if (!input || !input.files || input.files.length === 0) {
+        showToast('请先选择要补充的证据图片', 'warning');
+        return;
+    }
+    const existingCount = currentMyReport && currentMyReport.evidence ? currentMyReport.evidence.length : 0;
+    if (!validateEvidenceFiles(input, existingCount)) {
+        return;
+    }
+
+    const btn = document.getElementById('supplementBtn');
+    btn.disabled = true;
+    btn.textContent = '提交中...';
+
+    const formData = new FormData();
+    formData.append('action', 'supplement');
+    formData.append('report_id', reportId);
+    formData.append('message_id', messageId);
+    Array.from(input.files).forEach(function(file) {
+        formData.append('evidence[]', file);
+    });
+
+    fetch('api/report.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.code === 0) {
+            showToast(result.msg, 'success');
+            if (result.data && result.data.report) {
+                updateReportButton(messageId, result.data.report);
+                openMyReportModal(messageId, result.data.report);
+            }
+        } else {
+            showToast(result.msg || '补充失败', 'error');
+            btn.disabled = false;
+            btn.textContent = '补充证据';
+        }
+    })
+    .catch(error => {
+        console.error('补充证据失败:', error);
+        showToast('网络错误，请稍后重试', 'error');
+        btn.disabled = false;
+        btn.textContent = '补充证据';
+    });
+}
+
+/**
+ * 撤回举报（仅举报人、待处理状态可用；撤回后可重新举报）
+ */
+function withdrawReport(reportId, messageId) {
+    if (!confirm('确定撤回这条举报吗？撤回后可重新发起举报。')) return;
+
+    const btn = document.getElementById('withdrawBtn');
+    btn.disabled = true;
+    btn.textContent = '撤回中...';
+
+    const formData = new FormData();
+    formData.append('action', 'withdraw');
+    formData.append('report_id', reportId);
+    formData.append('message_id', messageId);
+
+    fetch('api/report.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.code === 0) {
+            showToast(result.msg, 'success');
+            closeMyReportModal();
+            resetReportButton(messageId);
+        } else {
+            showToast(result.msg || '撤回失败', 'error');
+            btn.disabled = false;
+            btn.textContent = '撤回举报';
+        }
+    })
+    .catch(error => {
+        console.error('撤回举报失败:', error);
+        showToast('网络错误，请稍后重试', 'error');
+        btn.disabled = false;
+        btn.textContent = '撤回举报';
+    });
+}
+
+/**
+ * 按举报状态同步举报按钮
+ */
+function updateReportButton(messageId, report) {
+    const btn = document.querySelector('.report-btn[data-message-id="' + messageId + '"]');
+    if (!btn || !report) return;
+
+    const textMap = {0: '已举报', 1: '已处理', 2: '已处理', 3: '已驳回'};
+    btn.classList.remove('btn-danger');
+    btn.classList.add('btn-secondary');
+    btn.disabled = false;
+    const reportText = btn.querySelector('.report-text');
+    if (reportText) {
+        reportText.textContent = textMap[report.status] || '已举报';
+    }
+}
+
+/**
+ * 撤回后恢复举报按钮为可举报状态
+ */
+function resetReportButton(messageId) {
+    const btn = document.querySelector('.report-btn[data-message-id="' + messageId + '"]');
+    if (!btn) return;
+
+    btn.classList.remove('btn-secondary');
+    btn.classList.add('btn-danger');
+    btn.disabled = false;
+    const reportText = btn.querySelector('.report-text');
+    if (reportText) {
+        reportText.textContent = '举报';
+    }
 }
 
 document.addEventListener('DOMContentLoaded', function() {

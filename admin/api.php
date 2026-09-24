@@ -42,6 +42,8 @@ switch ($action) {
             $imgFile = __DIR__ . '/../' . $msg['image'];
             if (file_exists($imgFile)) unlink($imgFile);
         }
+        // 删除该留言下全部举报的证据图片（举报记录由外键级联删除）
+        deleteMessageReportEvidence($db, $id);
         $db->prepare("DELETE FROM messages WHERE id = ?")->execute([$id]);
         jsonResponse(0, '删除成功');
         break;
@@ -65,6 +67,9 @@ switch ($action) {
         $report['process_note'] = $report['process_note'] ? nl2br(cleanInput($report['process_note'])) : '';
         $report['admin_name'] = $report['admin_name'] ? cleanInput($report['admin_name']) : '';
 
+        // 证据图片（管理员只读查看）
+        $report['evidence'] = getReportEvidence($report['id']);
+
         jsonResponse(0, 'ok', $report);
         break;
 
@@ -83,6 +88,8 @@ switch ($action) {
             if (!$report) jsonResponse(1, '举报不存在或已处理');
 
             if ($status === 1) {
+                // 先清理该留言全部举报的证据图片，再删除留言（举报由外键级联删除）
+                deleteMessageReportEvidence($db, $report['message_id']);
                 $stmt = $db->prepare("SELECT image FROM messages WHERE id = ?");
                 $stmt->execute([$report['message_id']]);
                 $msg = $stmt->fetch();
@@ -108,4 +115,17 @@ switch ($action) {
 
     default:
         jsonResponse(1, '未知操作');
+}
+
+/**
+ * 删除某条留言下所有举报的证据图片文件（不删数据库记录，交由外键级联）
+ */
+function deleteMessageReportEvidence($db, $messageId) {
+    $stmt = $db->prepare(
+        "SELECT re.image FROM report_evidence re
+         INNER JOIN reports r ON re.report_id = r.id
+         WHERE r.message_id = ?"
+    );
+    $stmt->execute([$messageId]);
+    deleteEvidenceFiles(array_column($stmt->fetchAll(), 'image'));
 }
